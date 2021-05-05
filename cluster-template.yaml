@@ -1,0 +1,143 @@
+apiVersion: kops.k8s.io/v1alpha2
+kind: Cluster
+metadata:
+  name: {{.k8s_cluster_name.value}}
+spec:
+  api:
+    loadBalancer:
+      class: Network
+      sslCertificate: {{.k8s_cluster_cert_arn.value}}
+      sslPolicy: ELBSecurityPolicy-TLS-1-2-2017-01
+      type: Public
+  authorization:
+    rbac: {}
+  channel: stable
+  cloudProvider: aws
+  configBase: s3://{{.kops_state_store.value}}/{{.k8s_cluster_name.value}}
+  containerRuntime: containerd
+  dnsZone: {{.k8s_cluster_zone_id.value}}
+  etcdClusters:
+  - etcdMembers:
+  {{range $i, $az := .vpc_generic_azs.value}}
+    - instanceGroup: master-{{.}}
+      name: {{. | replace $.region.value "" }}
+      encryptedVolume: true
+  {{end}}
+    name: main
+  - etcdMembers:
+  {{range $i, $az := .vpc_generic_azs.value}}
+    - instanceGroup: master-{{.}}
+      name: {{. | replace $.region.value "" }}
+      encryptedVolume: true
+  {{end}}
+    name: events
+  iam:
+    allowContainerRegistry: true
+    legacy: false
+  kubeAPIServer:
+    enableAdmissionPlugins:
+    - NodeRestriction
+    - PodSecurityPolicy
+    - NamespaceLifecycle
+    - LimitRanger
+    - ServiceAccount
+    - DefaultTolerationSeconds
+    - DefaultStorageClass
+    - MutatingAdmissionWebhook
+    - ValidatingAdmissionWebhook
+    - ResourceQuota
+    - TaintNodesByCondition
+    - Priority
+    - StorageObjectInUseProtection
+    - PersistentVolumeClaimResize
+    - RuntimeClass
+    - CertificateApproval
+    - CertificateSigning
+    - CertificateSubjectRestriction
+    - DefaultIngressClass
+  kubeDNS:
+    nodeLocalDNS:
+      cpuRequest: 25m
+      enabled: true
+      memoryRequest: 5Mi
+    provider: CoreDNS
+  kubelet:
+    anonymousAuth: false
+    authenticationTokenWebhook: true
+    authorizationMode: Webhook
+  kubernetesApiAccess:
+  {{range .k8s_access_cidr.value}}
+  - {{.}}
+  {{end}}
+  kubernetesVersion: {{.k8s_version.value}}
+  masterPublicName: k8s-api.{{.k8s_cluster_name.value}}
+  networkCIDR: {{.vpc_cidr.value}}
+  networkID: {{.vpc_id.value}}
+  networking:
+    calico:
+      crossSubnet: true
+      majorVersion: v3
+  nodeTerminationHandler:
+    enabled: true
+  nonMasqueradeCIDR: 100.64.0.0/10
+  subnets:
+  # Public (utility) subnets, one per AZ
+  {{range $i, $id := .public_subnet_ids.value}}
+  - id: {{.}}
+    name: utility-{{index $.vpc_generic_azs.value $i}}
+    type: Utility
+    zone: {{index $.vpc_generic_azs.value $i}}
+  {{end}}
+  # Private subnets, one per AZ
+  {{range $i, $id := .nat_subnet_ids.value}}
+  - id: {{.}}
+    name: {{index $.vpc_generic_azs.value $i}}
+    type: Private
+    zone: {{index $.vpc_generic_azs.value $i}}
+  {{end}}
+  topology:
+    dns:
+      type: Public
+    masters: private
+    nodes: private
+---
+
+# Create one master per AZ
+{{range .vpc_generic_azs.value}}
+apiVersion: kops.k8s.io/v1alpha2
+kind: InstanceGroup
+metadata:
+  labels:
+    kops.k8s.io/cluster: {{$.k8s_cluster_name.value}}
+  name: master-{{.}}
+spec:
+  image: {{.k8s_ami_id.value}}
+  kubernetesVersion: {{.k8s_version.value}}
+  machineType: t3.medium
+  maxSize: 1
+  minSize: 1
+  nodeLabels:
+    kops.k8s.io/instancegroup: master-{{.}}
+  role: Master
+  subnets:
+  - {{.}}
+---
+  {{end}}
+
+apiVersion: kops.k8s.io/v1alpha2
+kind: InstanceGroup
+metadata:
+  labels:
+    kops.k8s.io/cluster: {{.kubernetes_cluster_name.value}}
+  name: nodes
+spec:
+  image: {{.k8s_ami_id.value}}
+  kubernetesVersion: {{.k8s_version.value}}
+  machineType: t3.medium
+  maxSize: 2
+  minSize: 1
+  role: Node
+  subnets:
+  {{range .vpc_generic_azs.value}}
+  - {{.}}
+  {{end}}
